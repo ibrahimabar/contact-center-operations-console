@@ -1,0 +1,11 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+
+parameters:
+    paths:
+        - app
+
+    # Level 6: catches missing type hints, unclear array shapes, and
+    # implicit-mixed usage without demanding exhaustive generics everywhere
+    # — a reasonable bar for this codebase's size, see DECISIONS.md.
+    level: 6
