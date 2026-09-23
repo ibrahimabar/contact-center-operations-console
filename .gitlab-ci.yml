@@ -1,0 +1,199 @@
+# CI for the Contact Center Operations Console.
+#
+# Stages map 1:1 onto the brief's checklist: install → lint → test → build,
+# for both backend and frontend. See DECISIONS.md "CI/CD" for the reasoning
+# behind the caching, failure-behaviour, and secrets choices below.
+
+stages:
+  - install
+  - lint
+  - test
+  - build
+
+variables:
+  COMPOSER_CACHE_DIR: '$CI_PROJECT_DIR/.cache/composer'
+  NPM_CACHE_DIR: '$CI_PROJECT_DIR/.cache/npm'
+  # Backend test DB/cache config — mirrors backend/phpunit.xml, pointed at
+  # this pipeline's `mysql`/`redis` services instead of the docker-compose
+  # service names used locally.
+  DB_CONNECTION: mysql
+  DB_HOST: mysql
+  DB_PORT: '3306'
+  DB_DATABASE: contact_console_test
+  DB_USERNAME: contact_console
+  DB_PASSWORD: secret
+  MYSQL_DATABASE: contact_console_test
+  MYSQL_USER: contact_console
+  MYSQL_PASSWORD: secret
+  MYSQL_ROOT_PASSWORD: root_secret
+  REDIS_HOST: redis
+  REDIS_CACHE_DB: '2'
+  CACHE_STORE: redis
+  SESSION_DRIVER: database
+  APP_ENV: testing
+  APP_KEY: 'base64:REDACTED-ROTATED-NO-LONGER-VALID='
+
+# Re-run pipelines only where they're meaningful: a push to a branch, or an
+# MR — never both for the same commit (the default GitLab behaviour without
+# this block is to run twice).
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+default:
+  interruptible: true
+  # A runner hang shouldn't block the pipeline indefinitely; a real
+  # script failure should fail fast and visibly instead of being retried
+  # into a false green — so only infra-level failures get a retry.
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+# ---------------------------------------------------------------------------
+# Backend (Laravel / PHP)
+# ---------------------------------------------------------------------------
+
+# Every backend job gets a fresh php:8.4-cli container (GitLab CI job
+# isolation), so this extension setup — the slow part, mostly the redis
+# pecl compile — reruns per job; only the composer-level dependencies
+# (backend/vendor, via the cache below) are actually reused across jobs.
+# A custom pre-built CI image with these extensions baked in would remove
+# that repeated cost; not done here since it means publishing and
+# maintaining a separate image outside this repo for a pipeline that isn't
+# running under real load.
+.backend_base:
+  image: php:8.4-cli
+  before_script:
+    - cd backend
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git unzip libzip-dev libicu-dev >/dev/null
+    - docker-php-ext-install -j"$(nproc)" pdo_mysql zip intl >/dev/null
+    # pecl prompts (igbinary/msgpack/lzf/zstd/lz4 support) on stdin even in
+    # a non-interactive shell; `yes ''` accepts every default so this
+    # doesn't hang the job waiting for input that will never arrive.
+    # Each step runs on its own line (not chained with &&) and without
+    # output suppression, so a real failure here fails the job loudly at
+    # the install step instead of surfacing 5 minutes later as 51
+    # mysteriously-failing tests — which is exactly what silencing this
+    # with `&& ... >/dev/null 2>&1` did the first time this was written.
+    # `|| true`: once pecl has read the prompts it needs, it exits and
+    # `yes` gets SIGPIPE writing into a closed pipe — under a pipefail
+    # shell that's reported as *this line's* failure even though pecl
+    # itself (confirmed by the extension_loaded() check two lines down,
+    # which is the real gate here) succeeded.
+    - yes '' | pecl install redis || true
+    - docker-php-ext-enable redis
+    # Not `php -m | grep -q redis`: under a pipefail shell, grep -q exits as
+    # soon as it finds a match, which can SIGPIPE the still-writing `php -m`
+    # and fail the pipeline on its exit code even though the check itself
+    # passed — this is a real thing that happened running this in CI. (Also
+    # not a `? :` ternary here — unquoted, that reads as a YAML mapping key
+    # to some parsers, which is a second real thing that happened right
+    # after fixing the first one.)
+    - 'php -r "if (!extension_loaded(\"redis\")) { fwrite(STDERR, \"redis extension failed to load\n\"); exit(1); }"'
+    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+  cache:
+    key:
+      files: [backend/composer.lock]
+    paths:
+      - $COMPOSER_CACHE_DIR
+      - backend/vendor
+
+backend:install:
+  extends: .backend_base
+  stage: install
+  script:
+    - composer install --no-interaction --prefer-dist --no-progress
+
+backend:lint:
+  extends: .backend_base
+  stage: lint
+  needs: [backend:install]
+  script:
+    - ./vendor/bin/pint --test
+    - ./vendor/bin/phpstan analyse --memory-limit=512M --no-progress
+
+backend:test:
+  extends: .backend_base
+  stage: test
+  needs: [backend:install]
+  services:
+    - name: mysql:8.0
+      alias: mysql
+      command: ['--innodb-ft-min-token-size=2', '--innodb-ft-enable-stopword=0']
+    - name: redis:7-alpine
+      alias: redis
+  script:
+    - cp .env.example .env
+    # APP_KEY comes from the pipeline `variables:` above, not key:generate —
+    # phpunit.xml's own <env> entries (DB/Redis pointed at this job's
+    # `mysql`/`redis` service aliases) don't need a .env at all, but Laravel
+    # boots more predictably with one present.
+    - php artisan test --log-junit junit.xml
+  artifacts:
+    when: always
+    reports:
+      junit: backend/junit.xml
+    expire_in: 1 week
+
+# ---------------------------------------------------------------------------
+# Frontend (React / TypeScript)
+# ---------------------------------------------------------------------------
+
+.frontend_base:
+  image: node:22-alpine
+  before_script:
+    - cd frontend
+  cache:
+    key:
+      files: [frontend/package-lock.json]
+    paths:
+      - $NPM_CACHE_DIR
+      - frontend/node_modules
+
+frontend:install:
+  extends: .frontend_base
+  stage: install
+  script:
+    - npm ci --cache $NPM_CACHE_DIR
+
+frontend:lint:
+  extends: .frontend_base
+  stage: lint
+  needs: [frontend:install]
+  script:
+    - npm run lint
+
+frontend:typecheck:
+  extends: .frontend_base
+  stage: lint
+  needs: [frontend:install]
+  script:
+    - npm run typecheck
+
+frontend:test:
+  extends: .frontend_base
+  stage: test
+  needs: [frontend:install]
+  script:
+    - npm run test -- --reporter=junit --outputFile=junit.xml
+  artifacts:
+    when: always
+    reports:
+      junit: frontend/junit.xml
+    expire_in: 1 week
+
+frontend:build:
+  extends: .frontend_base
+  stage: build
+  needs: [frontend:install, frontend:lint, frontend:typecheck, frontend:test]
+  script:
+    - npm run build
+  artifacts:
+    paths:
+      - frontend/dist
+    expire_in: 1 week

@@ -36,3 +36,8 @@
 .DS_Store
 *.log
 /frontend/.env
+
+# gitlab-ci-local (used to validate .gitlab-ci.yml locally — see README)
+/.gitlab-ci-local/
+backend/junit.xml
+frontend/junit.xml
