@@ -43,7 +43,15 @@ const LIST_TAG = { type: 'ContactList' as const, id: 'LIST' }
 export const contactsApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
     listContacts: builder.query<CursorPage<Contact>, ListContactsParams>({
-      query: (params) => ({ url: '/contacts', params }),
+      query: ({ unassigned, ...params }) => ({
+        url: '/contacts',
+        // A bare boolean serializes to the string "true"/"false" in the
+        // query string, which Laravel's `boolean` validation rule rejects
+        // (it only accepts 1/0/"1"/"0"/true/false — not the word "true").
+        // Found by actually driving this filter in a browser, not by
+        // inspection — see AI_USAGE.md.
+        params: unassigned ? { ...params, unassigned: '1' } : params,
+      }),
       providesTags: (result) =>
         result
           ? [...result.data.map((c) => ({ type: 'Contact' as const, id: c.id })), LIST_TAG]
