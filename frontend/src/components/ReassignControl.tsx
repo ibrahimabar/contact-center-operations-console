@@ -27,19 +27,21 @@ export function ReassignControl({ contact }: { contact: Contact }) {
 
   return (
     <div>
-      <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">Assigned agent</label>
-      <select
-        value={contact.assigned_agent_id ?? ''}
-        onChange={(e) => setPendingAgentId(e.target.value ? Number(e.target.value) : null)}
-        className="rounded-md border border-slate-300 px-3 py-2 text-sm"
-      >
-        <option value="">Unassigned</option>
-        {agents?.map((a) => (
-          <option key={a.id} value={a.id}>
-            {a.name}
-          </option>
-        ))}
-      </select>
+      <label className="block text-sm">
+        <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">Assigned agent</span>
+        <select
+          value={contact.assigned_agent_id ?? ''}
+          onChange={(e) => setPendingAgentId(e.target.value ? Number(e.target.value) : null)}
+          className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+        >
+          <option value="">Unassigned</option>
+          {agents?.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+      </label>
 
       {apiError && <div className="mt-2"><ErrorBanner message={apiError.message} /></div>}
 

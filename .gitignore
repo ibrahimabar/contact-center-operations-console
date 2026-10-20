@@ -41,3 +41,8 @@
 /.gitlab-ci-local/
 backend/junit.xml
 frontend/junit.xml
+
+# Local review/testing reference docs — not part of the brief's required
+# deliverables (README/ARCHITECTURE/DECISIONS/AI_USAGE are), kept local-only.
+/VERIFICATION.md
+/REVIEW_CHECKLIST.md

@@ -29,7 +29,17 @@ const baseQueryWithAuthHandling: BaseQueryFn<string | FetchArgs, unknown, FetchB
 ) => {
   const method = typeof args === 'string' ? 'GET' : (args.method ?? 'GET')
   if (method !== 'GET' && method !== 'HEAD') {
-    await ensureCsrfCookie()
+    try {
+      await ensureCsrfCookie()
+    } catch (err) {
+      // A network-level failure here (the backend unreachable, not just an
+      // HTTP error status) throws instead of resolving — if left uncaught,
+      // that bypasses fetchBaseQuery entirely and RTK Query's error state
+      // ends up in a shape toApiError() doesn't recognize, so no banner
+      // ever renders and the user gets no feedback at all. Reported the
+      // same way fetchBaseQuery itself reports an unreachable server.
+      return { error: { status: 'FETCH_ERROR', error: String(err) } }
+    }
   }
 
   const result = await rawBaseQuery(args, api, extraOptions)
