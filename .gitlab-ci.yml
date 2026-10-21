@@ -31,7 +31,6 @@ variables:
   CACHE_STORE: redis
   SESSION_DRIVER: database
   APP_ENV: testing
-  APP_KEY: 'base64:REDACTED-ROTATED-NO-LONGER-VALID='
 
 # Re-run pipelines only where they're meaningful: a push to a branch, or an
 # MR — never both for the same commit (the default GitLab behaviour without
@@ -96,6 +95,11 @@ default:
     # after fixing the first one.)
     - 'php -r "if (!extension_loaded(\"redis\")) { fwrite(STDERR, \"redis extension failed to load\n\"); exit(1); }"'
     - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+    # A fresh key per job run, not a committed value — generated with plain
+    # PHP (no vendor/artisan needed yet) in the same format `key:generate`
+    # produces. `export` here is visible to this job's own `script:` below,
+    # since before_script and script run in the same shell session.
+    - export APP_KEY="base64:$(php -r 'echo base64_encode(random_bytes(32));')"
   cache:
     key:
       files: [backend/composer.lock]
@@ -129,7 +133,7 @@ backend:test:
       alias: redis
   script:
     - cp .env.example .env
-    # APP_KEY comes from the pipeline `variables:` above, not key:generate —
+    # APP_KEY is already exported by .backend_base's before_script above;
     # phpunit.xml's own <env> entries (DB/Redis pointed at this job's
     # `mysql`/`redis` service aliases) don't need a .env at all, but Laravel
     # boots more predictably with one present.
